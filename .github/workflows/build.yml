@@ -44,8 +44,13 @@ jobs:
       - name: Offline validation
         run: python scripts/validate.py base/core.yaml
 
-      - name: Placeholder secrets
-        run: cp secrets.example.yaml ci/secrets.yaml
+      - name: Inject Wi-Fi secrets
+        run: |
+          cat << 'EOF' > ci/secrets.yaml
+          wifi_ssid: "${{ secrets.WIFI_SSID }}"
+          wifi_password: "${{ secrets.WIFI_PASSWORD }}"
+          EOF
+
 
       - name: Cache PlatformIO
         uses: actions/cache@v4
