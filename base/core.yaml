@@ -640,12 +640,17 @@ voice_assistant:
                 - voice_assistant.stop:
                 - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
                 - script.execute: control_leds
-
+  on_timer_started:
+    - lambda: |
+        id(check_if_timers_active).execute();
+        if (id(is_timer_active)) {
+          id(fetch_first_active_timer).execute();
           id(next_timer).publish_state(id(first_active_timer).seconds_left);
           id(next_timer_name).publish_state(id(first_active_timer).name);
         }
     - script.execute: control_leds
   on_timer_cancelled:
+
     - lambda: |
         id(check_if_timers_active).execute();
         if (id(is_timer_active)) {
