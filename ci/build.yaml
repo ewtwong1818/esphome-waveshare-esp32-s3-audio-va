@@ -4,8 +4,13 @@
 # The workflow copies secrets.example.yaml to ci/secrets.yaml before building.
 
 substitutions:
-  name: waveshare-va-ci
-  friendly_name: "Waveshare Voice CI"
+  name: waveshare-voice
+  friendly_name: "Waveshare Voice"
+  posix_timezone: "HKT-8"
+
+esphome:
+  name_add_mac_suffix: true
 
 packages:
   core: !include ../base/core.yaml
+
