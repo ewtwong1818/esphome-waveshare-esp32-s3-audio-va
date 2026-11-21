@@ -596,18 +596,7 @@ voice_assistant:
     - script.execute:
         id: send_tts_uri_event
         tts_uri: !lambda 'return x;'
-    on_stt_end:
-    - lambda: |-
-        std::string text = x;
-        if (text.find("拜拜") != std::string::npos ||
-            text.find("再見") != std::string::npos ||
-            text.find("唔使") != std::string::npos ||
-            text.find("冇嘢") != std::string::npos ||
-            text.find("搞掂") != std::string::npos) {
-          id(end_conversation_flag) = true;
-        } else {
-          id(end_conversation_flag) = false;
-        }
+    
   on_stt_end:
     - lambda: |-
         std::string text = x;
