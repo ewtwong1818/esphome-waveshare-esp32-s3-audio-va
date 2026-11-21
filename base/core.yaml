@@ -596,7 +596,30 @@ voice_assistant:
     - script.execute:
         id: send_tts_uri_event
         tts_uri: !lambda 'return x;'
+    on_stt_end:
+    - lambda: |-
+        std::string text = x;
+        if (text.find("拜拜") != std::string::npos ||
+            text.find("再見") != std::string::npos ||
+            text.find("唔使") != std::string::npos ||
+            text.find("冇嘢") != std::string::npos ||
+            text.find("搞掂") != std::string::npos) {
+          id(end_conversation_flag) = true;
+        } else {
+          id(end_conversation_flag) = false;
+        }
   on_stt_end:
+    - lambda: |-
+        std::string text = x;
+        if (text.find("拜拜") != std::string::npos ||
+            text.find("再見") != std::string::npos ||
+            text.find("唔使") != std::string::npos ||
+            text.find("冇嘢") != std::string::npos ||
+            text.find("搞掂") != std::string::npos) {
+          id(end_conversation_flag) = true;
+        } else {
+          id(end_conversation_flag) = false;
+        }
     - script.execute:
         id: send_stt_text_event
         stt_text: !lambda 'return x;'
@@ -610,9 +633,9 @@ voice_assistant:
         duration: 1.0s
     - if:
         condition:
-          lambda: return id(voice_assistant_phase) == ${voice_assist_error_phase_id};
+          lambda: return id(voice_assistant_phase) == ${voice_assist_error_phase_id} || id(end_conversation_flag);
         then:
-          - delay: 1s            # let the error colour linger a beat
+          - lambda: id(end_conversation_flag) = false;
           - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
           - script.execute: control_leds
         else:
@@ -620,17 +643,15 @@ voice_assistant:
           - script.execute: control_leds
           - delay: 300ms
           - voice_assistant.start:
+          - delay: 5s
+          - if:
+              condition:
+                lambda: return id(voice_assistant_phase) == ${voice_assist_listening_phase_id};
+              then:
+                - voice_assistant.stop:
+                - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
+                - script.execute: control_leds
 
-  on_timer_finished:
-    - switch.turn_on: timer_ringing
-    - lambda: |
-        id(next_timer).publish_state(-1);
-        id(next_timer_name).publish_state("-");
-  on_timer_started:
-    - lambda: |
-        id(check_if_timers_active).execute();
-        if (id(is_timer_active)) {
-          id(fetch_first_active_timer).execute();
           id(next_timer).publish_state(id(first_active_timer).seconds_left);
           id(next_timer_name).publish_state(id(first_active_timer).name);
         }
@@ -776,6 +797,10 @@ light:
             }
 
 globals:
+  - id: end_conversation_flag
+    type: bool
+    restore_value: no
+    initial_value: 'false'
   - id: mic_is_muted
     type: bool
     restore_value: no          # the switch forces OFF at boot (see on_client_connected)
