@@ -56,3 +56,10 @@ jobs:
 
       - name: Compile
         run: esphome compile ci/build.yaml
+
+      - name: Upload firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: waveshare-firmware
+          path: .esphome/build/**/.pioenvs/**/firmware.factory.bin
+
