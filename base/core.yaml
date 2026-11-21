@@ -182,7 +182,6 @@ psram:
 
 wifi:
   id: wifi_id
-  fast_connect: ${hidden_ssid}
   power_save_mode: none     # audio streaming hates Wi-Fi power saving
   reboot_timeout: 10min
   on_connect:
