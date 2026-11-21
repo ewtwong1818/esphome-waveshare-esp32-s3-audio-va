@@ -613,8 +613,14 @@ voice_assistant:
           lambda: return id(voice_assistant_phase) == ${voice_assist_error_phase_id};
         then:
           - delay: 1s            # let the error colour linger a beat
-    - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
-    - script.execute: control_leds
+          - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
+          - script.execute: control_leds
+        else:
+          - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
+          - script.execute: control_leds
+          - delay: 300ms
+          - voice_assistant.start:
+
   on_timer_finished:
     - switch.turn_on: timer_ringing
     - lambda: |
