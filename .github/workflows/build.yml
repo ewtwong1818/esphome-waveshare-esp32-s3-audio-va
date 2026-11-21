@@ -57,9 +57,12 @@ jobs:
       - name: Compile
         run: esphome compile ci/build.yaml
 
+      - name: Copy firmware out
+        run: find . -name "firmware.factory.bin" -exec cp {} ./firmware.factory.bin \;
+
       - name: Upload firmware
         uses: actions/upload-artifact@v4
         with:
           name: waveshare-firmware
-          path: "**/firmware.factory.bin"
+          path: firmware.factory.bin
 
