@@ -635,7 +635,8 @@ voice_assistant:
           - delay: 5s
           - if:
               condition:
-                lambda: return id(voice_assistant_phase) == ${voice_assist_listening_phase_id};
+                lambda: return id(voice_assistant_phase) != ${voice_assist_idle_phase_id};
+
               then:
                 - voice_assistant.stop:
                 - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
