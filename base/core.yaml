@@ -444,6 +444,8 @@ micro_wake_word:
   microphone: i2s_mics
   stop_after_detection: false
   models:
+    - model: ../xiaomei_guanjia.json
+      id: xiaomei_guanjia
     - model: https://github.com/esphome/micro-wake-word-models/raw/main/models/v2/alexa.json
       id: alexa
     - model: https://github.com/esphome/micro-wake-word-models/raw/main/models/v2/okay_nabu.json
