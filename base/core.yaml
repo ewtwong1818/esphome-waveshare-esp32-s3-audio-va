@@ -636,11 +636,12 @@ voice_assistant:
           - if:
               condition:
                 lambda: return id(voice_assistant_phase) != ${voice_assist_idle_phase_id};
-
               then:
+                - lambda: id(end_conversation_flag) = true;
                 - voice_assistant.stop:
                 - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
                 - script.execute: control_leds
+
   on_timer_started:
     - lambda: |
         id(check_if_timers_active).execute();
