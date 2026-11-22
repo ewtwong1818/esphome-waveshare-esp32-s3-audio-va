@@ -428,11 +428,12 @@ media_player:
       - id: timer_finished_sound
         file: https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/timer_finished.flac
       - id: wake_word_triggered_sound
-        file: https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/wake_word_triggered.flac
+        file: ../sounds/wake_word_triggered.mp3
       - id: error_cloud_expired
         file: https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/error_cloud_expired.mp3
       - id: boot_sound_custom
         file: ${boot_sound_file}
+
 
 # Home Assistant picks the active wake word: the device page shows a "Wake word"
 # select listing every model below. The first
