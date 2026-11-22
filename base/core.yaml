@@ -444,7 +444,7 @@ micro_wake_word:
   microphone: i2s_mics
   stop_after_detection: false
   models:    
-    - model: file://../xiaomei_guanjia.json
+    - model: github://ewtwong1818/esphome-waveshare-esp32-s3-audio-va/xiaomei_guanjia.json@main
       id: xiaomei_guanjia
     - model: https://github.com/esphome/micro-wake-word-models/raw/main/models/v2/alexa.json
       id: alexa
