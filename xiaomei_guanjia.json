@@ -7,10 +7,10 @@
   "trained_languages": ["yue"],
   "version": 2,
   "micro": {
-    "probability_cutoff": 0.25,
-    "sliding_window_size": 3,
+    "probability_cutoff": 0.5,
+    "sliding_window_size": 4,
     "feature_step_size": 10,
-    "tensor_arena_size": 30000,
+    "tensor_arena_size": 80000,
     "minimum_esphome_version": "2024.7.0"
   }
 }
