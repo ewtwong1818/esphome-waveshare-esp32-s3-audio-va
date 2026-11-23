@@ -444,8 +444,6 @@ micro_wake_word:
   microphone: i2s_mics
   stop_after_detection: false
   models:    
-    - model: https://github.com/ewtwong1818/esphome-waveshare-esp32-s3-audio-va/raw/main/xiaomei_guanjia.json
-      id: xiaomei_guanjia
     - model: https://github.com/esphome/micro-wake-word-models/raw/main/models/v2/alexa.json
       id: alexa
     - model: https://github.com/esphome/micro-wake-word-models/raw/main/models/v2/okay_nabu.json
@@ -489,7 +487,6 @@ micro_wake_word:
                                 condition:
                                   and:
                                     - switch.is_on: wake_sound
-                                    - switch.is_off: night_mode   # the ring is enough at night
                                 then:
                                   - script.execute:
                                       id: play_sound
