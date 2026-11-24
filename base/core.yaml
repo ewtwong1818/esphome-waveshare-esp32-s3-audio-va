@@ -127,7 +127,7 @@ esphome:
               - number.set:
                   id: wake_word_threshold
                   value: !lambda |-
-                    uint8_t cutoff = id(okay_nabu).get_default_probability_cutoff();
+                    uint8_t cutoff = id(alexa).get_default_probability_cutoff();
                     for (auto *m : id(mww).get_wake_words()) {
                       if (m->is_enabled()) {
                         cutoff = m->get_default_probability_cutoff();
@@ -442,13 +442,16 @@ media_player:
 micro_wake_word:
   id: mww
   microphone: i2s_mics
-  stop_after_detection: false
-  task_stack_in_psram: true
-  models:    
+  stop_after_detection: false  
+  models:
+    - model: https://github.com/esphome/micro-wake-word-models/raw/main/models/v2/alexa.json
+      id: alexa
     - model: https://github.com/esphome/micro-wake-word-models/raw/main/models/v2/okay_nabu.json
       id: okay_nabu
-    - model: xiaomei_guanjia.json
-      id: xiaomei_guanjia
+    - model: https://github.com/esphome/micro-wake-word-models/raw/main/models/v2/hey_jarvis.json
+      id: hey_jarvis
+    - model: https://github.com/esphome/micro-wake-word-models/raw/main/models/v2/hey_mycroft.json
+      id: hey_mycroft
   vad:
     model: https://github.com/esphome/micro-wake-word-models/raw/main/models/v2/vad.json
   on_wake_word_detected:
