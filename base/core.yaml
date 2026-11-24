@@ -602,8 +602,11 @@ voice_assistant:
         std::string text = x;
         if (text.find("拜拜") != std::string::npos ||
             text.find("再見") != std::string::npos ||
+            text.find("再见") != std::string::npos ||
             text.find("唔使") != std::string::npos ||
             text.find("冇嘢") != std::string::npos ||
+            text.find("冇野") != std::string::npos ||
+            text.find("没嘢") != std::string::npos ||
             text.find("搞掂") != std::string::npos) {
           id(end_conversation_flag) = true;
         } else {
@@ -630,17 +633,23 @@ voice_assistant:
         else:
           - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
           - script.execute: control_leds
-          - delay: 300ms
+          - delay: 700ms
           - voice_assistant.start:
-          - delay: 5s
+          - delay: 500ms
+          - wait_until:
+              condition:
+                not:
+                  voice_assistant.is_running:
+              timeout: 15s
           - if:
               condition:
-                lambda: return id(voice_assistant_phase) != ${voice_assist_idle_phase_id};
+                voice_assistant.is_running:
               then:
                 - lambda: id(end_conversation_flag) = true;
                 - voice_assistant.stop:
                 - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
                 - script.execute: control_leds
+
 
   on_timer_started:
     - lambda: |
