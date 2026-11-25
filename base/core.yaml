@@ -586,42 +586,35 @@ voice_assistant:
           - lambda: id(voice_assistant_phase) = ${voice_assist_replying_phase_id};
           - script.execute: control_leds
   on_tts_start:
+    - lambda: |-
+        std::string text = x;
+        if (text.find("?") != std::string::npos || text.find("？") != std::string::npos) {
+          id(end_conversation_flag) = false;
+        } else {
+          id(end_conversation_flag) = true;
+        }
     - if:
         condition:
           lambda: 'return id(voice_assistant_phase) != ${voice_assist_replying_phase_id};'
         then:
           - lambda: id(voice_assistant_phase) = ${voice_assist_replying_phase_id};
           - script.execute: control_leds
+
   on_tts_end:
     - script.execute:
         id: send_tts_uri_event
         tts_uri: !lambda 'return x;'
-    
+
   on_stt_end:
-    - lambda: |-
-        std::string text = x;
-        if (text.find("拜拜") != std::string::npos ||
-            text.find("Bye") != std::string::npos ||
-            text.find("bye") != std::string::npos ||
-            text.find("派派") != std::string::npos ||
-            text.find("再見") != std::string::npos ||
-            text.find("再见") != std::string::npos ||
-            text.find("唔使") != std::string::npos ||
-            text.find("冇嘢") != std::string::npos ||
-            text.find("冇野") != std::string::npos ||
-            text.find("没嘢") != std::string::npos ||
-            text.find("搞掂") != std::string::npos) {
-          id(end_conversation_flag) = true;
-        } else {
-          id(end_conversation_flag) = false;
-        }
     - script.execute:
         id: send_stt_text_event
         stt_text: !lambda 'return x;'
+
   on_end:
     - wait_until:
         not:
           voice_assistant.is_running:
+
     - mixer_speaker.apply_ducking:
         id: media_mixing_input
         decibel_reduction: 0
