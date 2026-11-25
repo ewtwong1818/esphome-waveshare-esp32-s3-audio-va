@@ -601,6 +601,9 @@ voice_assistant:
     - lambda: |-
         std::string text = x;
         if (text.find("拜拜") != std::string::npos ||
+            text.find("Bye") != std::string::npos ||
+            text.find("bye") != std::string::npos ||
+            text.find("派派") != std::string::npos ||
             text.find("再見") != std::string::npos ||
             text.find("再见") != std::string::npos ||
             text.find("唔使") != std::string::npos ||
