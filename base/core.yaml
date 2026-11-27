@@ -735,10 +735,6 @@ voice_assistant:
     - script.execute:
         id: send_stt_text_event
         stt_text: !lambda 'return x;'
-  on_error:
-    - lambda: id(end_conversation_flag) = true;
-    - lambda: id(voice_assistant_phase) = ${voice_assist_error_phase_id};
-    - script.execute: control_leds
   on_end:
     - wait_until:
         not:
