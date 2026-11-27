@@ -612,14 +612,15 @@ micro_wake_word:
                             - if:
                                 condition:
                                     - switch.is_on: wake_sound
-                                       # the ring is enough at night
                                 then:
-                                  - delay: 150ms
+                                  - micro_wake_word.stop:
+                                  - delay: 50ms
                                   - script.execute:
                                       id: play_sound
                                       priority: true
                                       sound_file: !lambda return id(wake_word_triggered_sound);
-                                  - delay: 1100ms
+                                  - delay: 750ms
+
 
                             - voice_assistant.start:
                                 wake_word: !lambda return wake_word;
