@@ -620,7 +620,7 @@ micro_wake_word:
                                       priority: true
                                       sound_file: !lambda return id(wake_word_triggered_sound);
                                   - delay: 750ms
-
+                                  - micro_wake_word.start:
 
                             - voice_assistant.start:
                                 wake_word: !lambda return wake_word;
