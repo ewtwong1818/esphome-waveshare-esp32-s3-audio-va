@@ -968,6 +968,10 @@ output:
       - lambda: (void) state;
 
 globals:
+
+  - id: end_conversation_flag
+    type: bool
+    initial_value: 'false'
   - id: mic_is_muted
     type: bool
     restore_value: no          # the switch forces OFF at boot (see on_client_connected)
@@ -1929,8 +1933,5 @@ binary_sensor:
               - logger.log: "BOOT long-press: entering deep sleep"
               - deep_sleep.enter: deep_sleep_ctrl
 
-globals:
-  - id: end_conversation_flag
-    type: bool
-    initial_value: 'false'
+
              
