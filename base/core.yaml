@@ -611,16 +611,15 @@ micro_wake_word:
                             # Beep, then start Assist.
                             - if:
                                 condition:
-                                  and:
                                     - switch.is_on: wake_sound
-                                    - switch.is_off: night_mode   # the ring is enough at night
+                                       # the ring is enough at night
                                 then:
                                   - delay: 150ms
                                   - script.execute:
                                       id: play_sound
                                       priority: true
                                       sound_file: !lambda return id(wake_word_triggered_sound);
-                                  - delay: 500ms
+                                  - delay: 1100ms
 
                             - voice_assistant.start:
                                 wake_word: !lambda return wake_word;
@@ -736,6 +735,10 @@ voice_assistant:
     - script.execute:
         id: send_stt_text_event
         stt_text: !lambda 'return x;'
+  on_error:
+    - lambda: id(end_conversation_flag) = true;
+    - lambda: id(voice_assistant_phase) = ${voice_assist_error_phase_id};
+    - script.execute: control_leds
   on_end:
     - wait_until:
         not:
@@ -753,10 +756,11 @@ voice_assistant:
                 lambda: return id(voice_assistant_phase) == ${voice_assist_error_phase_id};
               then:
                 - delay: 1s
-          - lambda: id(end_conversation_flag) = false;
+          - lambda: id(end_conversation_flag) = true;
           - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
           - script.execute: control_leds
         else:
+          - lambda: id(end_conversation_flag) = true;
           - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
           - script.execute: control_leds
           - delay: 700ms
