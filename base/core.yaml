@@ -7,12 +7,13 @@
 # the TCA9555 expander) and voice timers + an alarm clock.
 #
 # AUDIO LAYOUT
-# The DAC and ADC share BCLK/LRCLK pins. Two I2S buses (two ports) ride the
-# shared pins: the mic bus is I2S master (always capturing, so it drives a
-# continuous clock) and the speaker bus is a slave that reads it. The ES8311
-# (DAC) and ES7210 (ADC) are stock and slave to the mic's clock. Capture and
-# playback run at once, on stock ESPHome, with no patched es8311 / force_master.
-# The full story is in the audio section below. Pinout: docs/HARDWARE.md.
+# One full-duplex, four-slot TDM bus owned by the aec_speexdsp component
+# (https://github.com/matt123p/esphome-aec). The ESP is the I2S master; the
+# ES7210 (ADC) delivers both mics plus MIC3, the board's speaker loopback, as
+# the echo reference; the ES8311 (DAC) plays from the same frame. SpeexDSP
+# removes the device's own playback from the mic before wake word and Assist
+# hear it, so the wake word can work while music or an alarm plays. The full
+# story is in the audio section below. Pinout: docs/HARDWARE.md.
 ###############################################################################
 
 substitutions:
@@ -63,9 +64,42 @@ substitutions:
   # shutdown line), so this is closer to a low-power idle than a true power off.
   enable_deep_sleep: 'false'
 
-  # Media player volume clamps (the onboard amp distorts near the top).
-  volume_min: '0.4'
+  # Media player volume clamps (the onboard amp distorts near the top). The
+  # slider maps linearly onto the ES8311 register (0.5 dB steps), about 5 dB
+  # per 10% of the slider. The canceller's -12 dB playback gain shifts the
+  # whole range down, so with 0.4 the bottom quarter of the slider was
+  # inaudible; 0.5 puts 1% at the same output level as the non-AEC build.
+  volume_min: '0.5'
   volume_max: '0.8'
+
+  # Silence between repeats of the timer alarm. The board has no echo
+  # cancellation, so while the alarm sound plays the mic mostly hears the
+  # speaker; the wake word (which silences the alarm) is reliably heard in these
+  # gaps. Shorter = more insistent alarm, harder to stop by voice.
+  timer_ring_pause_ms: '2000'
+
+  # Echo cancellation (aec_speexdsp). Which of the four ES7210 TDM slots carry
+  # the mic and the speaker loopback. Measured on this board with the "AEC slot
+  # N level" sensors: slots 0 and 2 follow room sound (MIC1/MIC2), slot 1 is
+  # silent except during playback (MIC3 loopback), slot 3 is dead.
+  aec_mic_slot: '0'
+  aec_ref_slot: '1'
+  # ES7210 PGA gain on the loopback channel (MIC3). This board's loopback is
+  # weak: at 0 dB a TTS reply measured about -50 dBFS, too quiet for the
+  # canceller to model the echo. 30 dB puts it near -20 dBFS with headroom.
+  # Options: 0 - 37.5 (3 dB steps up to 33). Lower it if "AEC reference peak"
+  # gets near 32767 at full volume.
+  aec_ref_gain: 30db
+  # Canceller size. SpeexDSP puts its state in internal RAM, which the S3 has
+  # little of: frame 256 / filter 1024 took 90 KB and left 10 KB free, and the
+  # board crash-looped. Frame 128 / filter 512 (32 ms echo tail, enough for a
+  # speaker a few cm from the mics) needs about half.
+  aec_frame_size: '128'
+  aec_filter_length: '512'
+  # Digital attenuation before the DAC and the reference, so the loopback
+  # does not clip. Closer to 0 = louder speaker, but a clipped reference
+  # cannot be cancelled.
+  aec_playback_gain_db: '-12'
 
   # Clock timezone in POSIX form - the device has no IANA database. It is only
   # a fallback: HA's time platform syncs the clock, and the `set_time_zone` API
@@ -81,7 +115,7 @@ substitutions:
 esphome:
   name: ${name}
   friendly_name: ${friendly_name}
-  min_version: 2026.8.0     # esp32_rmt_led_strip channel_colors
+  min_version: 2026.11.0    # es7210 tdm (echo cancellation)
   on_boot:
     # Publish a "no timer" placeholder and paint the ring as early as we can, so
     # the device shows life while Wi-Fi/API are still coming up.
@@ -112,11 +146,11 @@ esphome:
             setenv("TZ", id(saved_time_zone).c_str(), 1);
             tzset();
         # Push the mic gain restored from flash into the ES7210. The codec boots
-        # with `mic_gain` from audio_adc, so without this a saved value would show
-        # in HA while the hardware sat at the default.
-        - lambda: |-
-            id(adc_mic).set_mic_gain(id(mic_gain_db).state);
-            ESP_LOGI("mic", "[MIC] restored ES7210 gain -> %.1f dB", id(mic_gain_db).state);
+        # with `channel_gains` from audio_adc, so without this a saved value would
+        # show in HA while the hardware sat at the default.
+        - script.execute:
+            id: apply_mic_gain
+            gain: !lambda return id(mic_gain_db).state;
         # First boot only: start the wake word threshold slider at the active
         # model's own default cutoff (manifest or YAML), not at the fixed
         # initial_value.
@@ -129,7 +163,7 @@ esphome:
                   value: !lambda |-
                     uint8_t cutoff = id(alexa).get_default_probability_cutoff();
                     for (auto *m : id(mww).get_wake_words()) {
-                      if (m->is_enabled()) {
+                      if (m->is_enabled() && !m->get_internal_only()) {
                         cutoff = m->get_default_probability_cutoff();
                         break;
                       }
@@ -152,6 +186,21 @@ esphome:
               - microphone.stop_capture: i2s_mics
             else:
               - logger.log: "Mic enabled"
+
+# Echo cancellation, pinned so an upstream push cannot break a build.
+# aec_speexdsp comes from a fork of matt123p/esphome-aec v1.01 with two
+# changes: SpeexDSP buffers are 16-byte aligned (upstream's 4-byte-aligned FFT
+# workspace makes the ESP32-S3's SIMD FFT overwrite heap headers: stalled API,
+# then LoadProhibited in tlsf_walk_pool), and the playback ring size is
+# configurable (playback_buffer / playback_rebuffer). The ES7210 driver is the
+# stock one: its TDM mode shipped in ESPHome 2026.11.0.
+external_components:
+  - source:
+      type: git
+      url: https://github.com/MichalZaniewicz/esphome-aec
+      ref: 3513103b486dc4290593d8fc3c22932d2706e4ff
+      path: src/esphome
+    components: [aec_speexdsp]
 
 esp32:
   board: esp32-s3-devkitc-1
@@ -176,9 +225,28 @@ esp32:
       CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC: "y"
       CONFIG_MBEDTLS_SSL_PROTO_TLS1_3: "y"
 
+      # Compile for speed, not size: at -Os the echo canceller's floating-point
+      # loops run several times slower. Both keys are needed (Kconfig choice).
+      CONFIG_COMPILER_OPTIMIZATION_SIZE: "n"
+      CONFIG_COMPILER_OPTIMIZATION_PERF: "y"
+
 psram:
   mode: octal
   speed: 80MHz
+
+# Memory and main loop health while the canceller runs.
+debug:
+  update_interval: 15s
+
+interval:
+  - interval: 15s
+    then:
+      - lambda: |-
+          ESP_LOGI("mem", "internal free %u, min %u, largest %u | psram free %u",
+                   (unsigned) heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                   (unsigned) heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
+                   (unsigned) heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+                   (unsigned) heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
 
 wifi:
   id: wifi_id
@@ -276,79 +344,104 @@ time:
     on_time_sync:
       - script.execute: publish_current_time
 
-# The DAC and ADC share BCLK/LRCLK pins, but ESPHome's i2s_audio cannot run one
-# bus full-duplex (the mic and speaker each call i2s_new_channel on the port, and
-# the second fails with "Parent bus is busy"). So we use TWO buses (two I2S ports)
-# over the shared pins:
-#   - i2s_input  = the MIC bus, I2S MASTER. The mic is always capturing (wake
-#     word), so it drives BCLK/LRCLK/MCLK continuously. Using the ESP as master
-#     is what makes the mic get a correct-rate stream (a codec-mastered clock via
-#     force_master gave the mic garbage and killed wake word).
-#   - i2s_output = the SPEAKER bus, I2S SLAVE. It reads the mic's clock and only
-#     needs to output data, so it never contends for a port of its own.
-# The ES8311 (DAC) and ES7210 (ADC) are stock and slave to the mic's clock; no
-# patched es8311 / force_master is needed.
-i2s_audio:
-  - id: i2s_input
-    i2s_mclk_pin: ${i2s_mclk}
-    i2s_bclk_pin:
-      number: ${i2s_bclk}
-      allow_other_uses: true
-    i2s_lrclk_pin:
-      number: ${i2s_lrclk}
-      allow_other_uses: true
-  - id: i2s_output
-    i2s_bclk_pin:
-      number: ${i2s_bclk}
-      allow_other_uses: true
-    i2s_lrclk_pin:
-      number: ${i2s_lrclk}
-      allow_other_uses: true
-
+# The DAC and ADC share MCLK/BCLK/LRCLK, with one data line each way. Stock
+# i2s_audio cannot run one bus full-duplex ("Parent bus is busy"), and its
+# two-bus workaround gives no synchronised echo reference. aec_speexdsp owns
+# one I2S port in four-slot TDM as the master: every 16 kHz frame carries the
+# ES7210's four inputs (two mics, the MIC3 speaker loopback, an unused MIC4)
+# in and the DAC's samples out, all on one clock. That shared clock is what
+# lets the canceller line the loopback up against the mic.
 audio_adc:
   - platform: es7210
     id: adc_mic
     i2c_id: internal_i2c
-    # Runtime gain lives on the `mic_gain_db` number below (3 dB steps, the
-    # resolution of the ES7210 gain register).
-    mic_gain: 24db
+    bits_per_sample: 16bit
+    sample_rate: 16000
+    tdm: true
+    # MIC1/MIC2 are the microphones (runtime gain: `mic_gain_db`, applied by
+    # the apply_mic_gain script); MIC3 is the speaker loopback, fixed at
+    # `aec_ref_gain`; MIC4 is unused.
+    channel_gains:
+      - 24db
+      - 24db
+      - ${aec_ref_gain}
+      - 0db
 
 audio_dac:
   - platform: es8311
     id: es8311_dac
     i2c_id: internal_i2c
+    bits_per_sample: 16bit
+    sample_rate: 16000
+    use_mclk: true
+
+aec_speexdsp:
+  id: aec
+  audio_adc: adc_mic
+  mclk_pin: ${i2s_mclk}
+  bclk_pin: ${i2s_bclk}
+  lrclk_pin: ${i2s_lrclk}
+  din_pin: ${i2s_din}
+  dout_pin: ${i2s_dout}
+  i2s_port: 0
+  tdm_slots: 4
+  # One mic: half the canceller cost of two, which matters on the S3.
+  microphone_slots:
+    - ${aec_mic_slot}
+  reference_source: analog_slot
+  reference_slot: ${aec_ref_slot}
+  tx_slots: [0, 1]
+  frame_size: ${aec_frame_size}
+  filter_length: ${aec_filter_length}
+  noise_suppression: true
+  noise_suppression_level_db: 10
+  # Residual echo suppression with only playback / with playback and speech.
+  # Keep the second well below the first, or the user's voice is suppressed
+  # along with the echo.
+  echo_suppress_db: 25
+  echo_suppress_active_db: 10
+  agc:
+    enabled: true
+  vad: true
+  playback_gain_db: ${aec_playback_gain_db}
+  # The media player and mixer already buffer upstream, so the canceller's own
+  # playback ring only absorbs task jitter. Its 4 s default made ducking, stop
+  # and barge-in take effect ~4 s late (the beep queued behind the rest of the
+  # reply).
+  playback_buffer: 500ms
+  playback_rebuffer: 150ms
+  # Tracks small drift between nominal 16 kHz and the real I2S clock.
+  resampler: true
+  # Slot levels for the diagnostic sensors below.
+  meters:
+    id: aec_meters
+  # Log DSP load (must stay well under 100%) and transport errors.
+  profiling: true
+  diagnostics: true
 
 microphone:
-  - platform: i2s_audio
+  # What wake word and Assist hear: echo-cancelled and noise-suppressed. The
+  # id is kept from the i2s_audio build so the rest of the config is unchanged.
+  - platform: aec_speexdsp
     id: i2s_mics
-    i2s_audio_id: i2s_input
-    i2s_din_pin: ${i2s_din}
-    adc_type: external
-    pdm: false
-    # default i2s_mode: primary -> this bus masters the shared clock.
-    # 16-bit on purpose: as master the mic defines the frame's slot width, and
-    # the i2s_audio default is 32-bit. The ES8311/speaker are 16-bit, so a
-    # 32-bit frame doubles the bit clock they expect and playback comes out as
-    # noise. Matching 16-bit aligns the whole bus (the ES7210 is 16-bit too).
-    bits_per_sample: 16bit
+    aec_speexdsp_id: aec
 
 speaker:
-  - platform: i2s_audio
-    id: i2s_audio_speaker
-    i2s_audio_id: i2s_output
-    i2s_dout_pin: ${i2s_dout}
-    i2s_mode: secondary          # slave to the mic bus's clock
-    dac_type: external
+  - platform: aec_speexdsp
+    id: aec_speaker
+    aec_speexdsp_id: aec
+    num_channels: 1
+    # The canceller writes raw samples to the bus and applies no volume of its
+    # own, so the media player's volume and mute must reach the ES8311 here.
+    # The MIC3 loopback is taken after the DAC, so the echo reference follows.
     audio_dac: es8311_dac
-    timeout: never
-    buffer_duration: 100ms
 
   # Mixes the announcement and media pipelines into the one physical output.
   # Mono: the board has a single speaker (mono ES8311 + NS4150B), so a second
   # channel would just be discarded.
   - platform: mixer
     id: mixing_speaker
-    output_speaker: i2s_audio_speaker
+    output_speaker: aec_speaker
     num_channels: 1
     source_speakers:
       - id: announcement_mixing_input
@@ -376,17 +469,19 @@ media_player:
       speaker: announcement_resampling_speaker
       format: FLAC              # cheapest codec for the S3
       num_channels: 1           # stereo is pointless for announcements
-      sample_rate: 48000        # what Music Assistant serves
+      # The TDM bus runs at 16 kHz; asking HA for 16 kHz saves resampling.
+      sample_rate: 16000
     media_pipeline:
       speaker: media_resampling_speaker
       format: FLAC
       num_channels: 1           # mono hardware, one speaker
-      sample_rate: 48000
+      sample_rate: 16000
     on_announcement:
       - mixer_speaker.apply_ducking:
           id: media_mixing_input
           decibel_reduction: 20
           duration: 0.0s
+      - script.execute: arm_stop_word
     on_state:
       # Amp follows playback: turn it on the instant audio starts. It stays on
       # afterwards (the speaker then holds the line at clean silence), so there
@@ -428,12 +523,11 @@ media_player:
       - id: timer_finished_sound
         file: https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/timer_finished.flac
       - id: wake_word_triggered_sound
-        file: https://github.com/ewtwong1818/esphome-waveshare-esp32-s3-audio-va/raw/refs/heads/main/base/sounds/wake_v2.mp3
+        file: https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/wake_word_triggered.flac
       - id: error_cloud_expired
         file: https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/error_cloud_expired.mp3
       - id: boot_sound_custom
         file: ${boot_sound_file}
-
 
 # Home Assistant picks the active wake word: the device page shows a "Wake word"
 # select listing every model below. The first
@@ -442,7 +536,7 @@ media_player:
 micro_wake_word:
   id: mww
   microphone: i2s_mics
-  stop_after_detection: false  
+  stop_after_detection: false
   models:
     - model: https://github.com/esphome/micro-wake-word-models/raw/main/models/v2/alexa.json
       id: alexa
@@ -452,6 +546,13 @@ micro_wake_word:
       id: hey_jarvis
     - model: https://github.com/esphome/micro-wake-word-models/raw/main/models/v2/hey_mycroft.json
       id: hey_mycroft
+    # "Stop": not a wake word. Internal, so it is not offered in the "Wake word"
+    # select, starts disabled and never saves its state. arm_stop_word enables
+    # it only while a reply, announcement or timer alarm is playing; saying it
+    # ends that sound and never starts Assist.
+    - model: https://github.com/kahrendt/microWakeWord/releases/download/stop/stop.json
+      id: stop
+      internal: true
   vad:
     model: https://github.com/esphome/micro-wake-word-models/raw/main/models/v2/vad.json
   on_wake_word_detected:
@@ -467,26 +568,52 @@ micro_wake_word:
               then:
                 - switch.turn_off: timer_ringing
               else:
-                # Already listening -> the wake word cancels the session.
+                # "Stop" (armed only while something plays) -> end the reply
+                # or announcement, do not listen again.
                 - if:
                     condition:
-                      voice_assistant.is_running:
+                      lambda: 'return wake_word == "Stop";'
                     then:
-                      voice_assistant.stop:
-                    else:
-                      # Announcing -> the wake word stops the announcement.
                       - if:
                           condition:
-                            media_player.is_announcing:
+                            voice_assistant.is_running:
+                          then:
+                            - voice_assistant.stop:
+                      - media_player.stop:
+                          announcement: true
+                    else:
+                      # A plain announcement (no Assist session) -> the wake word
+                      # just stops it.
+                      - if:
+                          condition:
+                            and:
+                              - not:
+                                  voice_assistant.is_running:
+                              - media_player.is_announcing:
                           then:
                             - media_player.stop:
                                 announcement: true
-                          # Otherwise: beep, then start Assist.
                           else:
+                            # Barge-in: a session is running (listening or
+                            # replying) -> cut it short, then listen again.
+                            - if:
+                                condition:
+                                  voice_assistant.is_running:
+                                then:
+                                  - voice_assistant.stop:
+                                  - media_player.stop:
+                                      announcement: true
+                                  - wait_until:
+                                      condition:
+                                        not:
+                                          voice_assistant.is_running:
+                                      timeout: 2s
+                            # Beep, then start Assist.
                             - if:
                                 condition:
                                   and:
                                     - switch.is_on: wake_sound
+                                    - switch.is_off: night_mode   # the ring is enough at night
                                 then:
                                   - script.execute:
                                       id: play_sound
@@ -586,56 +713,40 @@ voice_assistant:
           - lambda: id(voice_assistant_phase) = ${voice_assist_replying_phase_id};
           - script.execute: control_leds
   on_tts_start:
-    - lambda: |-
-        std::string text = x;
-        if (text.find("?") != std::string::npos || text.find("？") != std::string::npos) {
-          id(end_conversation_flag) = false;
-        } else {
-          id(end_conversation_flag) = true;
-        }
     - if:
         condition:
           lambda: 'return id(voice_assistant_phase) != ${voice_assist_replying_phase_id};'
         then:
           - lambda: id(voice_assistant_phase) = ${voice_assist_replying_phase_id};
           - script.execute: control_leds
-
   on_tts_end:
     - script.execute:
         id: send_tts_uri_event
         tts_uri: !lambda 'return x;'
-
   on_stt_end:
     - script.execute:
         id: send_stt_text_event
         stt_text: !lambda 'return x;'
-
   on_end:
     - wait_until:
         not:
           voice_assistant.is_running:
-
     - mixer_speaker.apply_ducking:
         id: media_mixing_input
         decibel_reduction: 0
         duration: 1.0s
     - if:
         condition:
-          lambda: return id(voice_assistant_phase) == ${voice_assist_error_phase_id} || id(end_conversation_flag);
+          lambda: return id(voice_assistant_phase) == ${voice_assist_error_phase_id};
         then:
-          - lambda: id(end_conversation_flag) = false;
-          - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
-          - script.execute: control_leds
-        else:
-          - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
-          - script.execute: control_leds
-          - delay: 700ms
-          - voice_assistant.start:
-          - delay: 1s
-          - wait_until:
-              condition:
-                lambda: return id(voice_assistant_phase) == ${voice_assist_idle_phase_id};
-              timeout: 15s
+          - delay: 1s            # let the error colour linger a beat
+    - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
+    - script.execute: control_leds
+  on_timer_finished:
+    - switch.turn_on: timer_ringing
+    - lambda: |
+        id(next_timer).publish_state(-1);
+        id(next_timer_name).publish_state("-");
   on_timer_started:
     - lambda: |
         id(check_if_timers_active).execute();
@@ -646,7 +757,6 @@ voice_assistant:
         }
     - script.execute: control_leds
   on_timer_cancelled:
-
     - lambda: |
         id(check_if_timers_active).execute();
         if (id(is_timer_active)) {
@@ -786,11 +896,55 @@ light:
               it[i] = Color(r, g, 0);
             }
 
+  # "Ring colour": a colour picker in HA for the assistant's accent colour
+  # (listening, thinking, replying, timer countdown, alarm). It drives no
+  # hardware: control_leds reads its colour and paints status_ring with it.
+  # Only the hue matters; its on/off and brightness are ignored (LED Ring
+  # Brightness sets the level). Status colours stay fixed: red = error / no HA,
+  # green = volume, rainbow = boot.
+  - platform: rgb
+    id: ring_colour
+    name: "Ring colour"
+    icon: mdi:palette
+    entity_category: config
+    red: ring_colour_out_r
+    green: ring_colour_out_g
+    blue: ring_colour_out_b
+    gamma_correct: 1.0
+    default_transition_length: 0s
+    restore_mode: RESTORE_DEFAULT_ON
+    initial_state:              # violet, the colour before this picker existed
+      red: 100%
+      green: 0%
+      blue: 100%
+    # Also fires while the saved colour is restored in setup(), before the ring
+    # is up, hence the init_in_progress gate (see the effect selects).
+    on_state:
+      - if:
+          condition:
+            lambda: 'return !id(init_in_progress);'
+          then:
+            - script.execute: control_leds
+
+# Placeholder outputs for the "Ring colour" picker above (it needs three).
+output:
+  - platform: template
+    id: ring_colour_out_r
+    type: float
+    write_action:
+      - lambda: (void) state;
+  - platform: template
+    id: ring_colour_out_g
+    type: float
+    write_action:
+      - lambda: (void) state;
+  - platform: template
+    id: ring_colour_out_b
+    type: float
+    write_action:
+      - lambda: (void) state;
+
 globals:
-  - id: end_conversation_flag
-    type: bool
-    restore_value: no
-    initial_value: 'false'
   - id: mic_is_muted
     type: bool
     restore_value: no          # the switch forces OFF at boot (see on_client_connected)
@@ -857,10 +1011,60 @@ globals:
     restore_value: no
 
 script:
+  # Push `mic_gain_db` into the two mic channels only. ES7210::set_mic_gain
+  # would also move MIC3, the echo reference. ES7210::set_channel_gain does
+  # reach the hardware after setup, but it reprograms all four channels and
+  # briefly powers down every PGA, the reference included, on each call. So
+  # the gain registers (MIC1 0x43, MIC2 0x44; low nibble = 3 dB steps,
+  # 13 = 36 dB) are written directly. Runs from the slider and from on_boot,
+  # since the restored slider value is not applied by TemplateNumber::setup().
+  # The gain is a parameter: in set_action the number still holds the OLD
+  # value (TemplateNumber::control runs set_action before publish_state), so
+  # reading id(mic_gain_db).state there applied the previous slider position.
+  - id: apply_mic_gain
+    parameters:
+      gain: float
+    then:
+      - lambda: |-
+          const uint8_t value = gain <= 33.0f ? (uint8_t) ((gain + 0.5f) / 3.0f) : 13;
+          for (uint8_t reg = 0x43; reg <= 0x44; reg++) {
+            uint8_t current;
+            if (id(adc_mic).read_byte(reg, &current))
+              id(adc_mic).write_byte(reg, (current & 0xF0) | value);
+          }
+          ESP_LOGI("mic", "[MIC] ES7210 mic gain -> %.1f dB (reference untouched)", gain);
   # Push the wake word cutoffs for the current "Wake word sensitivity" option.
   # Cutoffs are quantised uint8 (255 = 1.0). The preset offsets follow the
   # okay_nabu figures measured on the Dinner Party Corpus: 0.85 -> 0.000 FAPH,
   # 0.69 -> 0.376 FAPH, 0.56 -> 0.751 FAPH (FAPH = false accepts per hour).
+  # Arms the "Stop" model for the length of an announcement (a reply, an HA
+  # announcement, a timer alarm), runs from on_announcement. The 1 s wait skips
+  # short sounds (wake beep, boot chime), where it is pointless. Restart mode:
+  # on_announcement can fire again mid-sound; the disable at the end runs
+  # unconditionally, so a restarted run cannot leave the model armed. While a
+  # timer rings, timer_ringing owns the model instead.
+  - id: arm_stop_word
+    mode: restart
+    then:
+      - delay: 1s
+      - if:
+          condition:
+            and:
+              - media_player.is_announcing:
+              - switch.is_off: timer_ringing
+          then:
+            - micro_wake_word.enable_model: stop
+            - wait_until:
+                not:
+                  media_player.is_announcing:
+      - if:
+          condition:
+            switch.is_off: timer_ringing
+          then:
+            - micro_wake_word.disable_model: stop
+
+  # The "Stop" model (internal) is left out: it keeps its own manifest cutoff,
+  # since a preset offset would make it fire on the reply audio itself.
   - id: apply_wake_word_sensitivity
     mode: restart
     then:
@@ -877,12 +1081,14 @@ script:
             float t = id(wake_word_threshold).state;
             if (std::isnan(t)) return;
             // Every model gets it, so it follows the "Wake word" choice in HA.
-            for (auto *m : id(mww).get_wake_words()) m->set_probability_cutoff(to_cutoff(t));
+            for (auto *m : id(mww).get_wake_words())
+              if (!m->get_internal_only()) m->set_probability_cutoff(to_cutoff(t));
           } else {
             int offset = 0;                                   // Slightly: model default
             if (opt == "Moderately sensitive") offset = 40;   // about -0.16
             else if (opt == "Very sensitive") offset = 75;    // about -0.29
-            for (auto *m : id(mww).get_wake_words()) preset(m, offset);
+            for (auto *m : id(mww).get_wake_words())
+              if (!m->get_internal_only()) preset(m, offset);
           }
           for (auto *m : id(mww).get_wake_words()) {
             ESP_LOGI("wake_word", "Sensitivity '%s': %s cutoff %u%s", opt.c_str(), m->get_wake_word().c_str(),
@@ -968,6 +1174,18 @@ script:
           auto set = [&](const std::string &effect, float r, float g, float b) {
             id(led_set_effect).execute(effect, r, g, b);
           };
+          // The assistant's accent colour from the "Ring colour" picker,
+          // normalised so its strongest channel is 1 (the picker's own
+          // brightness is ignored). Falls back to violet if it reads black.
+          const auto &rc = id(ring_colour).remote_values;
+          float ar = rc.get_red(), ag = rc.get_green(), ab = rc.get_blue();
+          const float amax = std::max(ar, std::max(ag, ab));
+          if (amax <= 0.0f) { ar = 1.0f; ag = 0.0f; ab = 1.0f; }
+          else              { ar /= amax; ag /= amax; ab /= amax; }
+          // k keeps the old per-phase levels: 0.8 listening, 0.6 the rest.
+          auto accent = [&](const std::string &effect, float k) {
+            set(effect, ar * k, ag * k, ab * k);
+          };
 
           if (improv_ble) {                          // BLE provisioning
             set("Pulse Medium", 1.0, 0.89, 0.71);    // warm white
@@ -983,7 +1201,7 @@ script:
             return;
           }
           if (ringing) {                             // timer/alarm ringing
-            set("Pulse Fast", 0.6, 0.0, 0.6);
+            accent("Pulse Fast", 0.6);
             return;
           }
 
@@ -992,13 +1210,13 @@ script:
             // Listening effect, so the chosen animation shows from the wake word on.
             case ${voice_assist_waiting_for_command_phase_id}:
             case ${voice_assist_listening_for_command_phase_id}:
-              set(id(listening_effect).current_option(), 0.8, 0.0, 0.8);
+              accent(id(listening_effect).current_option(), 0.8);
               return;
             case ${voice_assist_thinking_phase_id}:
-              set(id(thinking_effect).current_option(), 0.6, 0.0, 0.6);
+              accent(id(thinking_effect).current_option(), 0.6);
               return;
             case ${voice_assist_replying_phase_id}:
-              set(id(replying_effect).current_option(), 0.6, 0.0, 0.6);
+              accent(id(replying_effect).current_option(), 0.6);
               return;
             case ${voice_assist_error_phase_id}:
               set("Pulse Fast", 1.0, 0.0, 0.0);
@@ -1012,7 +1230,7 @@ script:
           // A timer is counting down. "Timer countdown on ring" turns this off,
           // so the ring stays dark (e.g. a nap timer in a dark room).
           if (timers_active && id(timer_countdown_ring).state) {
-            set("Pulse Slow", 0.6, 0.0, 0.6);
+            accent("Pulse Slow", 0.6);
             return;
           }
 
@@ -1049,7 +1267,7 @@ script:
               .set_command(media_player::MediaPlayerCommand::MEDIA_PLAYER_COMMAND_REPEAT_ONE)
               .set_announcement(true)
               .perform();
-            id(external_media_player)->set_playlist_delay_ms(speaker::AudioPipelineType::ANNOUNCEMENT, 500);
+            id(external_media_player)->set_playlist_delay_ms(speaker::AudioPipelineType::ANNOUNCEMENT, ${timer_ring_pause_ms});
 
   - id: disable_repeat
     then:
@@ -1182,6 +1400,27 @@ script:
           }
 
 select:
+  # AEC bring-up: publish one raw TDM slot instead of the cleaned mic, to map
+  # which slot is which and to hear the effect of the canceller (the mic slot
+  # raw vs "Off"). Not restored: every boot starts on the cleaned output.
+  - platform: template
+    id: aec_raw_slot
+    name: "AEC raw slot"
+    icon: mdi:waveform
+    entity_category: diagnostic
+    optimistic: true
+    options:
+      - "Off"
+      - "Slot 0"
+      - "Slot 1"
+      - "Slot 2"
+      - "Slot 3"
+    initial_option: "Off"
+    on_value:
+      - lambda: |-
+          id(aec).set_diagnostic_raw_slot(i == 0 ? -1 : (int8_t) (i - 1));
+          ESP_LOGI("aec", "Raw slot: %s", x.c_str());
+
   # Presets are relative to each model's own default cutoff (from its manifest,
   # or `probability_cutoff:` in YAML), so they stay sensible when a model is
   # swapped for a custom one. "Custom" uses the threshold slider instead.
@@ -1400,11 +1639,13 @@ switch:
           id: media_mixing_input
           decibel_reduction: 20
           duration: 0.0s
+      - micro_wake_word.enable_model: stop   # "Stop" silences the alarm
       - script.execute: ring_timer
       - script.execute: control_leds
       - delay: 15min           # give up if nobody stops it
       - switch.turn_off: timer_ringing
     on_turn_off:
+      - micro_wake_word.disable_model: stop
       - script.execute: disable_repeat
       - if:
           condition:
@@ -1453,11 +1694,9 @@ number:
     # publishes it and does not run set_action.
     optimistic: true
     set_action:
-      - lambda: |-
-          id(adc_mic).set_mic_gain(x);
-      - logger.log:
-          format: "[MIC] ES7210 gain -> %.1f dB"
-          args: ["x"]
+      - script.execute:
+          id: apply_mic_gain
+          gain: !lambda return x;
 
   # Detection threshold used when "Wake word sensitivity" is set to "Custom".
   # It applies to whichever wake word is active. On first boot it is seeded
@@ -1525,6 +1764,56 @@ sensor:
     unit_of_measurement: s
     icon: "mdi:timer"
     accuracy_decimals: 0
+
+  # AEC bring-up meters: RMS of each raw TDM slot (0-32767). With music playing
+  # in a quiet room the speaker loopback slot is loud and steady; talking near
+  # the board with nothing playing moves the two mic slots while the loopback
+  # stays near zero. The reference peak should stay clearly below 32767.
+  - platform: template
+    name: "AEC slot 0 level"
+    icon: mdi:waveform
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: 5s
+    lambda: return id(aec_meters).get_slot_rms(0);
+  - platform: template
+    name: "AEC slot 1 level"
+    icon: mdi:waveform
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: 5s
+    lambda: return id(aec_meters).get_slot_rms(1);
+  - platform: template
+    name: "AEC slot 2 level"
+    icon: mdi:waveform
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: 5s
+    lambda: return id(aec_meters).get_slot_rms(2);
+  - platform: template
+    name: "AEC slot 3 level"
+    icon: mdi:waveform
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: 5s
+    lambda: return id(aec_meters).get_slot_rms(3);
+  - platform: debug
+    free:
+      name: "Heap free"
+      entity_category: diagnostic
+    block:
+      name: "Heap largest block"
+      entity_category: diagnostic
+    loop_time:
+      name: "Loop time"
+      entity_category: diagnostic
+  - platform: template
+    name: "AEC reference peak"
+    icon: mdi:waveform
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: 5s
+    lambda: return id(aec_meters).get_reference_peak();
 
 text_sensor:
   - platform: template
