@@ -542,9 +542,9 @@ micro_wake_word:
       id: alexa
     - model: https://github.com/esphome/micro-wake-word-models/raw/main/models/v2/okay_nabu.json
       id: okay_nabu
-    - model: https://github.com/esphome/micro-wake-word-models/raw/main/models/v2/hey_jarvis.json
+    - model: ../wakewords/xiaoaitongxue.json
       id: hey_jarvis
-    - model: https://github.com/esphome/micro-wake-word-models/raw/main/models/v2/hey_mycroft.json
+    - model: ../wakewords/lady_kiki.json
       id: hey_mycroft
     # "Stop": not a wake word. Internal, so it is not offered in the "Wake word"
     # select, starts disabled and never saves its state. arm_stop_word enables
