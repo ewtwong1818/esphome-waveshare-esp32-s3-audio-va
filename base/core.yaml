@@ -453,6 +453,7 @@ speaker:
   - platform: resampler
     id: announcement_resampling_speaker
     output_speaker: announcement_mixing_input
+    volume_multiplier: 1.4
   - platform: resampler
     id: media_resampling_speaker
     output_speaker: media_mixing_input
